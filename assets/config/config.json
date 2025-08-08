@@ -1,0 +1,8 @@
+{
+    "secPassPhraseApi": "@pi20@%WH",
+    "secSaltValueApi": "#S_v01_=@",
+    "secInitVectorApi": "@C03un1D835w37l0",
+    "sessionMaxLifetimeMinutes": 30,
+    "apiUrlLogin": "https://engine.weflow.com/services/portal/community/api/autenticacion/loginApp",
+    "apiUrlEventos": "https://engine.weflow.com/services/portal/community/api/events/events"
+}
