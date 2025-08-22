@@ -1,0 +1,294 @@
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import '../models/community.dart';
+import '../models/application.dart';
+import '../models/event.dart';
+import 'event_sqlite_service.dart';
+import 'storage_service.dart';
+import 'config_service.dart';
+import '../services/encryption_service.dart';
+
+class DataService {
+  final StorageService storageService;
+  late final EncryptionService _encryptionService;
+
+  DataService({required this.storageService}) {
+    _encryptionService = EncryptionService(
+      passPhrase: ConfigService.secPassPhraseApi ?? '',
+      saltValue: ConfigService.secSaltValueApi ?? '',
+      initVector: ConfigService.secInitVectorApi ?? '',
+    );
+  }
+
+  Future<Map<String, dynamic>> fetchData(String username) async {
+    final apiUrl = ConfigService.apiUrlEventos;
+    if (apiUrl == null) {
+      throw Exception('La URL del servicio de eventos no está configurada.');
+    }
+
+    final session = await storageService.getSession();
+    final lastConnection = session?.lastEventFetch ?? DateTime.now().toString();
+    final encryptedUsername = _encryptionService.encryptAES(username);
+
+    final response = await http.post(
+      Uri.parse(apiUrl),
+      headers: {
+        'Authorization': 'Bearer ${session?.token ?? ''}',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode(
+          {'UserCod': encryptedUsername, 'UltimaConexionApp': lastConnection}),
+    );
+
+    if (response.statusCode == 200) {
+      final dataEncrypt = _encryptionService.decryptAES(response.body);
+      final data = json.decode(dataEncrypt);
+
+      List<Community> communities = (data['Comunidades'] as List)
+          .map((json) => Community.fromJson(json))
+          .toList();
+
+      List<Application> applications = (data['Aplicaciones'] as List)
+          .map((json) => Application.fromJson(json))
+          .toList();
+
+      List<Event> newEvents = (data['Eventos'] as List)
+          .map((json) => Event.fromJson(json))
+          .toList();
+
+      final newSession =
+          session?.copyWith(lastEventFetch: DateTime.now().toString());
+      if (newSession != null) {
+        await storageService.saveSession(newSession);
+      }
+
+      // Usamos la función modificada para obtener y guardar los nuevos eventos
+      List<Event> onlyNewEvents =
+          await storageService.mergeAndSaveEvents(newEvents);
+
+      Map<String, Event> localEvents = await storageService.getEvents();
+
+      return {
+        'communities': communities,
+        'applications': applications,
+        'events': localEvents.values.toList(),
+        'newEvents': onlyNewEvents, // Retornamos los nuevos eventos
+      };
+    } else {
+      throw Exception('Error al obtener los datos: ${response.statusCode}');
+    }
+  }
+
+  Future<Map<String, dynamic>> fetchData2(String username) async {
+    //final apiUrl = ConfigService.apiUrlEventos2;
+    final apiUrl = ConfigService.apiUrlEventos;
+
+    if (apiUrl == null) {
+      throw Exception('La URL del servicio de eventos no está configurada.');
+    }
+
+    final session = await storageService.getSession();
+    final lastConnection = session?.lastEventFetch ?? DateTime.now().toString();
+    final encryptedUsername = _encryptionService.encryptAES(username);
+
+    final response = await http.post(
+      Uri.parse(apiUrl),
+      headers: {
+        'Authorization': 'Bearer ${session?.token ?? ''}',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode(
+          {'UserCod': encryptedUsername, 'UltimaConexionApp': lastConnection}),
+    );
+
+    if (response.statusCode == 200) {
+      final dataEncrypt = _encryptionService.decryptAES(response.body);
+      //final dataEncrypt = response.body;
+      final data = json.decode(dataEncrypt);
+      final evDb = EventSqliteService();
+      await evDb.init();
+
+      //obtener los eventos locales
+      //cruzar los eventos que llegaron con los locales
+      final nivel5 = (data['Nivel5'] as List?) ?? [];
+      await evDb.upsertFromNivel5(nivel5);
+
+      //con los eventos nuevos, agrupo por empresa-tipo-concepto para contarlos
+      //final eventos = await evDb.getAll();
+
+      //tranformo response y eventos a estructura indexada
+      //empresa[id_empresa]["tipos"][id_tipo]["conceptos"][id_concepto] → datos de concepto + "aplicaciones"
+      final empresaIndex = buildEmpresaIndex(data);
+
+      final cantNoLeidos = await evDb.countUnreadGrouped();
+      for (final g in cantNoLeidos) {
+        final empId = g['empId']?.toString();
+        final tipoId = g['tipoId']?.toString();
+        final conceptoId = g['conceptoId']?.toString();
+        final total = (g['totalNoLeidos'] as int?) ?? 0;
+
+        if (empId == null || tipoId == null || conceptoId == null) continue;
+
+        final empresa = empresaIndex[empId] as Map<String, dynamic>?;
+        if (empresa == null) continue; // no existe la empresa en el índice
+
+        final tipos = empresa['tipos'] as Map<String, dynamic>?;
+        final tipo = tipos?[tipoId] as Map<String, dynamic>?;
+        if (tipo == null) continue; // no existe el tipo en el índice
+
+        final conceptos = tipo['conceptos'] as Map<String, dynamic>?;
+        final concepto = conceptos?[conceptoId] as Map<String, dynamic>?;
+        if (concepto == null) continue; // no existe el concepto en el índice
+
+        // incorporar conteo en el nodo del concepto
+        concepto['totalNoLeidos'] = total;
+      }
+
+      //akgi
+
+      return empresaIndex;
+    } else {
+      throw Exception('Error al obtener los datos: ${response.statusCode}');
+    }
+  }
+
+  Future<void> clearLocalData() async {
+    await storageService.saveEvents({});
+  }
+
+  Map<String, dynamic> buildEmpresaIndex(Map<String, dynamic> response) {
+    final Map<String, dynamic> empresa = {};
+
+    // Nivel1: Empresas
+    for (final e in List<Map<String, dynamic>>.from(response['Nivel1'] ?? [])) {
+      final empId = e['EmpId'].toString();
+      empresa[empId] = {
+        ...e,
+        'tipos': <String, dynamic>{},
+      };
+    }
+
+    // Nivel2: Tipos (por empresa)
+    for (final t in List<Map<String, dynamic>>.from(response['Nivel2'] ?? [])) {
+      final empId = t['EmpId'].toString();
+      final tipoId = t['TipoId'].toString();
+
+      empresa.putIfAbsent(
+          empId,
+          () => {
+                'EmpId': t['EmpId'],
+                'Empresa': null,
+                'LogoEmp': null,
+                'tipos': <String, dynamic>{},
+              });
+
+      final tipos = empresa[empId]['tipos'] as Map<String, dynamic>;
+      tipos[tipoId] = {
+        ...t,
+        'conceptos': <String, dynamic>{},
+      };
+    }
+
+    // Nivel3: Conceptos (por TipoId, NO trae EmpId)
+    for (final c in List<Map<String, dynamic>>.from(response['Nivel3'] ?? [])) {
+      final tipoId = c['TipoId'].toString();
+      final conceptoId = c['ConceptoId'].toString();
+
+      empresa.forEach((empId, empData) {
+        final tipos = empData['tipos'] as Map<String, dynamic>;
+        final tipoData = tipos[tipoId];
+        if (tipoData != null) {
+          final conceptos = tipoData['conceptos'] as Map<String, dynamic>;
+          conceptos[conceptoId] = {
+            ...c,
+            'aplicaciones': <String, dynamic>{},
+            'totalNoLeidos': 0,
+          };
+        }
+      });
+    }
+
+    // Nivel4: Aplicaciones (por ConceptoId, NO trae EmpId/TipoId)
+    for (final a in List<Map<String, dynamic>>.from(response['Nivel4'] ?? [])) {
+      final conceptoId = a['ConceptoId'].toString();
+      final appId = a['AplicacionId'].toString();
+
+      empresa.forEach((empId, empData) {
+        final tipos = empData['tipos'] as Map<String, dynamic>;
+        tipos.forEach((tId, tData) {
+          final conceptos = tData['conceptos'] as Map<String, dynamic>;
+          final conceptoData = conceptos[conceptoId];
+          if (conceptoData != null) {
+            final apps = conceptoData['aplicaciones'] as Map<String, dynamic>;
+            apps[appId] = a; // upsert directo
+          }
+        });
+      });
+    }
+
+    // (Opcional) Nivel5: si querés, podés colgarlos donde te convenga
+    final ultima =
+        List<Map<String, dynamic>>.from(response['UltimaConexiones'] ?? []);
+
+    return empresa;
+  }
+
+  /// Retorna eventos de un concepto, ordenados:
+  /// 1) No leídos por fecha DESC, luego 2) Leídos por fecha DESC.
+  Future<List<Map<String, dynamic>>> getEventsByConcept({
+    required int empId,
+    required int tipoId,
+    required int conceptoId, // corresponde a comunidadId en SQLite
+  }) async {
+    final evDb = EventSqliteService();
+    await evDb.init();
+
+    final unread = await evDb.getAll(
+      empId: empId,
+      tipoId: tipoId,
+      comunidadId: conceptoId,
+      isRead: false,
+      orderBy: 'fecha DESC',
+    );
+
+    final read = await evDb.getAll(
+      empId: empId,
+      tipoId: tipoId,
+      comunidadId: conceptoId,
+      isRead: true,
+      orderBy: 'fecha DESC',
+    );
+
+    return [...unread, ...read];
+  }
+
+  // ADD: marca como leídos todos los eventos del concepto
+  Future<int> markConceptEventsRead({
+    required int empId,
+    required int tipoId,
+    required int conceptoId,
+  }) async {
+    final evDb = EventSqliteService();
+    await evDb.init();
+    return evDb.markAllReadForConcept(
+      empId: empId,
+      tipoId: tipoId,
+      comunidadId: conceptoId,
+    );
+  }
+
+// ADD: obtiene el total no leídos del concepto (para refrescar Home)
+  Future<int> getUnreadCountForConcept({
+    required int empId,
+    required int tipoId,
+    required int conceptoId,
+  }) async {
+    final evDb = EventSqliteService();
+    await evDb.init();
+    return evDb.countUnread(
+      empId: empId,
+      tipoId: tipoId,
+      comunidadId: conceptoId,
+    );
+  }
+}
