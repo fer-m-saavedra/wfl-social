@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:workmanager/workmanager.dart'; // Importa workmanager
 import 'screens/login_page.dart';
 import 'services/config_service.dart';
 import 'services/notification_service.dart'; // Importa tu servicio de notificaciones
@@ -12,30 +11,7 @@ import 'services/auth_service.dart'; // Importa AuthService
 final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
     FlutterLocalNotificationsPlugin();
 
-// Función que se ejecuta en segundo plano
-void callbackDispatcher() {
-  Workmanager().executeTask((task, inputData) async {
-    // Inicializa el servicio de configuración
-    await ConfigService.loadConfig();
 
-    final storageService = StorageService();
-    final dataService = DataService(storageService: storageService);
-    final authService = AuthService(dataService);
-
-    // Instancia de NotificationService con la notificación local
-    final notificationService = NotificationService(
-      dataService: dataService,
-      authService: authService,
-      flutterLocalNotificationsPlugin:
-          flutterLocalNotificationsPlugin, // Agrega la instancia de notificaciones
-    );
-
-    // Llama a checkForNewNotifications
-    await notificationService.checkForNewNotifications();
-
-    return Future.value(true); // Indica que la tarea se completó con éxito
-  });
-}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -44,27 +20,11 @@ void main() async {
   await ConfigService.loadConfig();
 
   // Inicializa el servicio de notificaciones locales
-  var initializationSettingsAndroid = AndroidInitializationSettings('app_icon');
-  var initializationSettingsDarwin = const DarwinInitializationSettings(
-  requestAlertPermission: true,
-  requestBadgePermission: true,
-  requestSoundPermission: true,
-);
-var initializationSettings = InitializationSettings(
-  android: initializationSettingsAndroid,
-  iOS: initializationSettingsDarwin,
-);
-  await flutterLocalNotificationsPlugin.initialize(initializationSettings);
-
-  // Inicializa Workmanager para tareas en segundo plano
-  Workmanager().initialize(callbackDispatcher, isInDebugMode: false);
-
-  // Registra la tarea periódica que se ejecuta cada 15 minutos
-  Workmanager().registerPeriodicTask(
-    "1", // ID de la tarea
-    "notificacionesTask", // Nombre de la tarea
-    frequency: Duration(minutes: 15), // Frecuencia de la tarea
-  );
+  //var initializationSettingsAndroid = AndroidInitializationSettings('app_icon');
+  //var initializationSettings = InitializationSettings(
+  //  android: initializationSettingsAndroid,
+  //);
+  //await flutterLocalNotificationsPlugin.initialize(initializationSettings);
 
   runApp(const MyApp());
 }
