@@ -8,6 +8,14 @@ import 'storage_service.dart';
 import 'config_service.dart';
 import '../services/encryption_service.dart';
 
+/// Excepción específica para 401
+class UnauthorizedException implements Exception {
+  final String message;
+  UnauthorizedException([this.message = '401 Unauthorized']);
+  @override
+  String toString() => 'UnauthorizedException: $message';
+}
+
 class DataService {
   final StorageService storageService;
   late final EncryptionService _encryptionService;
@@ -37,22 +45,23 @@ class DataService {
         'Content-Type': 'application/json',
       },
       body: jsonEncode(
-          {'UserCod': encryptedUsername, 'UltimaConexionApp': lastConnection}),
+        {'UserCod': encryptedUsername, 'UltimaConexionApp': lastConnection},
+      ),
     );
 
     if (response.statusCode == 200) {
       final dataEncrypt = _encryptionService.decryptAES(response.body);
       final data = json.decode(dataEncrypt);
 
-      List<Community> communities = (data['Comunidades'] as List)
+      List<Community> communities = (data['Comunidades'] as List? ?? [])
           .map((json) => Community.fromJson(json))
           .toList();
 
-      List<Application> applications = (data['Aplicaciones'] as List)
+      List<Application> applications = (data['Aplicaciones'] as List? ?? [])
           .map((json) => Application.fromJson(json))
           .toList();
 
-      List<Event> newEvents = (data['Eventos'] as List)
+      List<Event> newEvents = (data['Eventos'] as List? ?? [])
           .map((json) => Event.fromJson(json))
           .toList();
 
@@ -62,7 +71,7 @@ class DataService {
         await storageService.saveSession(newSession);
       }
 
-      // Usamos la función modificada para obtener y guardar los nuevos eventos
+      // Guarda solo eventos nuevos
       List<Event> onlyNewEvents =
           await storageService.mergeAndSaveEvents(newEvents);
 
@@ -72,15 +81,17 @@ class DataService {
         'communities': communities,
         'applications': applications,
         'events': localEvents.values.toList(),
-        'newEvents': onlyNewEvents, // Retornamos los nuevos eventos
+        'newEvents': onlyNewEvents,
       };
+    } else if (response.statusCode == 401) {
+      throw UnauthorizedException();
     } else {
       throw Exception('Error al obtener los datos: ${response.statusCode}');
     }
   }
 
   Future<Map<String, dynamic>> fetchData2(String username) async {
-    //final apiUrl = ConfigService.apiUrlEventos2;
+    // final apiUrl = ConfigService.apiUrlEventos2;
     final apiUrl = ConfigService.apiUrlEventos;
 
     if (apiUrl == null) {
@@ -98,28 +109,25 @@ class DataService {
         'Content-Type': 'application/json',
       },
       body: jsonEncode(
-          {'UserCod': encryptedUsername, 'UltimaConexionApp': lastConnection}),
+        {'UserCod': encryptedUsername, 'UltimaConexionApp': lastConnection},
+      ),
     );
 
     if (response.statusCode == 200) {
       final dataEncrypt = _encryptionService.decryptAES(response.body);
-      //final dataEncrypt = response.body;
-      final data = json.decode(dataEncrypt);
+      final data = json.decode(dataEncrypt) as Map<String, dynamic>;
+
       final evDb = EventSqliteService();
       await evDb.init();
 
-      //obtener los eventos locales
-      //cruzar los eventos que llegaron con los locales
+      // Nivel5: upsert a SQLite
       final nivel5 = (data['Nivel5'] as List?) ?? [];
       await evDb.upsertFromNivel5(nivel5);
 
-      //con los eventos nuevos, agrupo por empresa-tipo-concepto para contarlos
-      //final eventos = await evDb.getAll();
-
-      //tranformo response y eventos a estructura indexada
-      //empresa[id_empresa]["tipos"][id_tipo]["conceptos"][id_concepto] → datos de concepto + "aplicaciones"
+      // Construir índice (Empresas -> Tipos -> Conceptos -> Aplicaciones)
       final empresaIndex = buildEmpresaIndex(data);
 
+      // Inyectar conteos de no leídos en cada concepto
       final cantNoLeidos = await evDb.countUnreadGrouped();
       for (final g in cantNoLeidos) {
         final empId = g['empId']?.toString();
@@ -130,23 +138,29 @@ class DataService {
         if (empId == null || tipoId == null || conceptoId == null) continue;
 
         final empresa = empresaIndex[empId] as Map<String, dynamic>?;
-        if (empresa == null) continue; // no existe la empresa en el índice
+        if (empresa == null) continue;
 
         final tipos = empresa['tipos'] as Map<String, dynamic>?;
         final tipo = tipos?[tipoId] as Map<String, dynamic>?;
-        if (tipo == null) continue; // no existe el tipo en el índice
+        if (tipo == null) continue;
 
         final conceptos = tipo['conceptos'] as Map<String, dynamic>?;
         final concepto = conceptos?[conceptoId] as Map<String, dynamic>?;
-        if (concepto == null) continue; // no existe el concepto en el índice
+        if (concepto == null) continue;
 
-        // incorporar conteo en el nodo del concepto
         concepto['totalNoLeidos'] = total;
       }
 
-      //akgi
+      // Actualizar "última conexión"
+      final newSession =
+          session?.copyWith(lastEventFetch: DateTime.now().toString());
+      if (newSession != null) {
+        await storageService.saveSession(newSession);
+      }
 
       return empresaIndex;
+    } else if (response.statusCode == 401) {
+      throw UnauthorizedException();
     } else {
       throw Exception('Error al obtener los datos: ${response.statusCode}');
     }
@@ -156,81 +170,148 @@ class DataService {
     await storageService.saveEvents({});
   }
 
+  /// Lee un valor (id) desde varias posibles claves (camelCase/snake_case), y lo retorna como string.
+  String _idStr(Map<String, dynamic> m, List<String> keys) {
+    for (final k in keys) {
+      final v = m[k];
+      if (v != null && v.toString().isNotEmpty) return v.toString();
+    }
+    return '';
+  }
+
+  /// Construye la estructura:
+  /// empresa[empId]["tipos"][tipoId]["conceptos"][conceptoId].aplicaciones[appId]
+  /// Compatibilidad con claves camelCase y snake_case:
+  /// - EmpId / empresa_id
+  /// - TipoId / tipo_id
+  /// - ConceptoId / concepto_id
+  /// - AplicacionId / aplicacion_id
+  ///
+  /// IMPORTANTE: Nivel 3 y 4 se insertan usando **EmpId** (filtrado por empresa).
   Map<String, dynamic> buildEmpresaIndex(Map<String, dynamic> response) {
     final Map<String, dynamic> empresa = {};
 
     // Nivel1: Empresas
     for (final e in List<Map<String, dynamic>>.from(response['Nivel1'] ?? [])) {
-      final empId = e['EmpId'].toString();
+      final empId = _idStr(e, ['EmpId', 'empresa_id', 'emp_id']);
+      if (empId.isEmpty) continue;
+
       empresa[empId] = {
-        ...e,
+        'EmpId': e['EmpId'] ?? e['empresa_id'] ?? e['emp_id'],
+        'Empresa': e['Empresa'] ?? e['empresa'],
+        'LogoEmp': e['LogoEmp'] ?? e['logo_emp'],
         'tipos': <String, dynamic>{},
       };
     }
 
     // Nivel2: Tipos (por empresa)
     for (final t in List<Map<String, dynamic>>.from(response['Nivel2'] ?? [])) {
-      final empId = t['EmpId'].toString();
-      final tipoId = t['TipoId'].toString();
+      final empId = _idStr(t, ['EmpId', 'empresa_id', 'emp_id']);
+      final tipoId = _idStr(t, ['TipoId', 'tipo_id']);
+      if (empId.isEmpty || tipoId.isEmpty) continue;
 
-      empresa.putIfAbsent(
-          empId,
-          () => {
-                'EmpId': t['EmpId'],
-                'Empresa': null,
-                'LogoEmp': null,
-                'tipos': <String, dynamic>{},
-              });
+      empresa.putIfAbsent(empId, () {
+        return {
+          'EmpId': t['EmpId'] ?? t['empresa_id'] ?? t['emp_id'],
+          'Empresa': null,
+          'LogoEmp': null,
+          'tipos': <String, dynamic>{},
+        };
+      });
 
       final tipos = empresa[empId]['tipos'] as Map<String, dynamic>;
       tipos[tipoId] = {
-        ...t,
+        'EmpId': t['EmpId'] ?? t['empresa_id'] ?? t['emp_id'],
+        'TipoId': t['TipoId'] ?? t['tipo_id'],
+        'Tipo': t['Tipo'] ?? t['tipo'],
+        'Logo': t['Logo'] ?? t['logo'],
         'conceptos': <String, dynamic>{},
       };
     }
 
-    // Nivel3: Conceptos (por TipoId, NO trae EmpId)
+    // Nivel3: Conceptos (por empresa + tipo)
+    // AHORA VIENEN con EmpId / empresa_id → insertamos SOLO en la empresa/tipo correspondiente
     for (final c in List<Map<String, dynamic>>.from(response['Nivel3'] ?? [])) {
-      final tipoId = c['TipoId'].toString();
-      final conceptoId = c['ConceptoId'].toString();
+      final empId = _idStr(c, ['EmpId', 'empresa_id', 'emp_id']);
+      final tipoId = _idStr(c, ['TipoId', 'tipo_id']);
+      final conceptoId = _idStr(c, ['ConceptoId', 'concepto_id']);
+      if (empId.isEmpty || tipoId.isEmpty || conceptoId.isEmpty) continue;
 
-      empresa.forEach((empId, empData) {
-        final tipos = empData['tipos'] as Map<String, dynamic>;
-        final tipoData = tipos[tipoId];
-        if (tipoData != null) {
-          final conceptos = tipoData['conceptos'] as Map<String, dynamic>;
-          conceptos[conceptoId] = {
-            ...c,
-            'aplicaciones': <String, dynamic>{},
-            'totalNoLeidos': 0,
-          };
-        }
-      });
+      final empData = empresa[empId] as Map<String, dynamic>?;
+      if (empData == null) continue;
+
+      final tipos = empData['tipos'] as Map<String, dynamic>?;
+      final tipoData = tipos?[tipoId] as Map<String, dynamic>?;
+      if (tipoData == null) continue;
+
+      final conceptos = tipoData['conceptos'] as Map<String, dynamic>;
+      conceptos[conceptoId] = {
+        'EmpId': c['EmpId'] ?? c['empresa_id'] ?? c['emp_id'],
+        'TipoId': c['TipoId'] ?? c['tipo_id'],
+        'ConceptoId': c['ConceptoId'] ?? c['concepto_id'],
+        'Concepto': c['Concepto'] ?? c['concepto'],
+        'UrlIcoConcepto': c['UrlIcoConcepto'] ?? c['url_ico_concepto'],
+        'UrlConcepto': c['UrlConcepto'] ?? c['url_concepto'],
+        'aplicaciones': <String, dynamic>{},
+        'totalNoLeidos': 0,
+      };
     }
 
-    // Nivel4: Aplicaciones (por ConceptoId, NO trae EmpId/TipoId)
+    // Nivel4: Aplicaciones (por empresa + tipo + concepto)
     for (final a in List<Map<String, dynamic>>.from(response['Nivel4'] ?? [])) {
-      final conceptoId = a['ConceptoId'].toString();
-      final appId = a['AplicacionId'].toString();
+      final empId = _idStr(a, ['EmpId', 'empresa_id', 'emp_id']);
+      final tipoId = _idStr(a, ['TipoId', 'tipo_id']);
+      final conceptoId = _idStr(a, ['ConceptoId', 'concepto_id']);
+      final appId = _idStr(a, ['AplicacionId', 'aplicacion_id']);
+      if (empId.isEmpty || tipoId.isEmpty || conceptoId.isEmpty || appId.isEmpty) {
+        continue;
+      }
 
-      empresa.forEach((empId, empData) {
-        final tipos = empData['tipos'] as Map<String, dynamic>;
-        tipos.forEach((tId, tData) {
-          final conceptos = tData['conceptos'] as Map<String, dynamic>;
-          final conceptoData = conceptos[conceptoId];
-          if (conceptoData != null) {
-            final apps = conceptoData['aplicaciones'] as Map<String, dynamic>;
-            apps[appId] = a; // upsert directo
-          }
-        });
-      });
+      final empData = empresa[empId] as Map<String, dynamic>?;
+      if (empData == null) continue;
+
+      final tipos = empData['tipos'] as Map<String, dynamic>?;
+      final tipoData = tipos?[tipoId] as Map<String, dynamic>?;
+      if (tipoData == null) continue;
+
+      final conceptos = tipoData['conceptos'] as Map<String, dynamic>?;
+      final conceptoData = conceptos?[conceptoId] as Map<String, dynamic>?;
+      if (conceptoData == null) continue;
+
+      final apps = conceptoData['aplicaciones'] as Map<String, dynamic>;
+      apps[appId] = {
+        'EmpId': a['EmpId'] ?? a['empresa_id'] ?? a['emp_id'],
+        'TipoId': a['TipoId'] ?? a['tipo_id'],
+        'ConceptoId': a['ConceptoId'] ?? a['concepto_id'],
+        'AplicacionId': a['AplicacionId'] ?? a['aplicacion_id'],
+        'Aplicacion': a['Aplicacion'] ?? a['aplicacion'],
+        'UrlIcoAplicacion': a['UrlIcoAplicacion'] ?? a['url_ico_aplicacion'],
+      };
     }
-
-    // (Opcional) Nivel5: si querés, podés colgarlos donde te convenga
-    final ultima =
-        List<Map<String, dynamic>>.from(response['UltimaConexiones'] ?? []);
 
     return empresa;
+
+    // Estructura final:
+    // {
+    //   "12": {
+    //     EmpId, Empresa, LogoEmp,
+    //     "tipos": {
+    //       "1": {
+    //         EmpId, TipoId, Tipo, Logo,
+    //         "conceptos": {
+    //           "12": {
+    //             EmpId, TipoId, ConceptoId, Concepto, UrlIcoConcepto, UrlConcepto,
+    //             "aplicaciones": {
+    //               "1": { EmpId, TipoId, ConceptoId, AplicacionId, Aplicacion, UrlIcoAplicacion }
+    //             },
+    //             totalNoLeidos
+    //           }
+    //         }
+    //       }
+    //     }
+    //   },
+    //   "_UltimaConexiones": [ ... ]
+    // }
   }
 
   /// Retorna eventos de un concepto, ordenados:
@@ -262,7 +343,7 @@ class DataService {
     return [...unread, ...read];
   }
 
-  // ADD: marca como leídos todos los eventos del concepto
+  /// Marca como leídos todos los eventos del concepto
   Future<int> markConceptEventsRead({
     required int empId,
     required int tipoId,
@@ -277,7 +358,7 @@ class DataService {
     );
   }
 
-// ADD: obtiene el total no leídos del concepto (para refrescar Home)
+  /// Total no leídos del concepto (para refrescar Home)
   Future<int> getUnreadCountForConcept({
     required int empId,
     required int tipoId,

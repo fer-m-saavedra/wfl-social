@@ -85,6 +85,18 @@ class _MyHomePageState extends State<MyHomePage> {
       } else {
         setState(() => _isLoading = false);
       }
+    } on UnauthorizedException {
+      // Si la API devolvió 401, forzamos logout y navegamos al login
+      try {
+        final authService =
+            AuthService(DataService(storageService: _storageService));
+        await authService.logout();
+      } catch (_) {}
+      if (!mounted) return;
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (context) => const LoginPage()),
+      );
     } catch (e) {
       setState(() => _isLoading = false);
       if (mounted) {
