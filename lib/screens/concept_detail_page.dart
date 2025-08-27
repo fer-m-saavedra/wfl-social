@@ -11,7 +11,6 @@ class ConceptDetailPage extends StatefulWidget {
   final int conceptoId;
 
   /// Índice de aplicaciones del concepto (viene de la estructura indexada).
-  /// Estructura esperada:
   /// {
   ///   "123": { "Aplicacion": "Mi App", ... },
   ///   "124": { "Aplicacion": "Otra App", ... }
@@ -34,9 +33,16 @@ class ConceptDetailPage extends StatefulWidget {
 
 class _ConceptDetailPageState extends State<ConceptDetailPage> {
   final _data = DataService(storageService: StorageService());
+  final _dateFmt = DateFormat('dd-MM-yyyy HH:mm');
+
   bool _loading = true;
   bool _madeChanges = false; // para avisar al Home
+
+  /// Eventos crudos del concepto (ya marcados leídos en UI).
   List<Map<String, dynamic>> _events = [];
+
+  /// Grupos por aplicación (llenos luego de _load()).
+  List<_AppGroup> _groups = [];
 
   @override
   void initState() {
@@ -68,11 +74,14 @@ class _ConceptDetailPageState extends State<ConceptDetailPage> {
         conceptoId: widget.conceptoId,
       );
 
+      // Preparar UI
+      final uiRows = rows.map((e) => {...e, 'isRead': 1}).toList();
+      final groups = _buildGroups(uiRows);
+
       if (!mounted) return;
       setState(() {
-        _events = rows
-            .map((e) => {...e, 'isRead': 1}) // reflejar en UI
-            .toList();
+        _events = uiRows;
+        _groups = groups;
         _loading = false;
         _madeChanges = affected > 0;
       });
@@ -83,6 +92,40 @@ class _ConceptDetailPageState extends State<ConceptDetailPage> {
         SnackBar(content: Text('Error cargando eventos: $e')),
       );
     }
+  }
+
+  List<_AppGroup> _buildGroups(List<Map<String, dynamic>> events) {
+    // agrupar por aplicacionId (clave estable)
+    final byId = <String, List<Map<String, dynamic>>>{};
+    for (final e in events) {
+      final id = (e['aplicacionId'] ?? '').toString();
+      final key = id.isEmpty ? '-' : id;
+      byId.putIfAbsent(key, () => []).add(e);
+    }
+
+    // construir grupos con nombre resuelto y ordenar eventos por fecha desc
+    final groups = <_AppGroup>[];
+    byId.forEach((id, list) {
+      list.sort((a, b) {
+        final da = DateTime.tryParse((a['fecha'] ?? '').toString());
+        final db = DateTime.tryParse((b['fecha'] ?? '').toString());
+        if (da == null && db == null) return 0;
+        if (da == null) return 1;
+        if (db == null) return -1;
+        return db.compareTo(da); // desc
+      });
+      groups.add(
+        _AppGroup(
+          appId: id,
+          appName: id == '-' ? 'App' : _resolveAppName(id),
+          events: list,
+        ),
+      );
+    });
+
+    // ordenar grupos por nombre de app (alfabético)
+    groups.sort((a, b) => a.appName.toLowerCase().compareTo(b.appName.toLowerCase()));
+    return groups;
   }
 
   @override
@@ -137,78 +180,103 @@ class _ConceptDetailPageState extends State<ConceptDetailPage> {
                   ),
                   const SizedBox(height: 8),
 
-                  // Lista de eventos
+                  // Lista de grupos (acordeón por aplicación)
                   Expanded(
-                    child: _events.isEmpty
+                    child: _groups.isEmpty
                         ? const Center(
                             child: Text(
                               'No hay eventos para este concepto.',
                               style: TextStyle(color: Colors.black54),
                             ),
                           )
-                        : ListView.separated(
+                        : ListView.builder(
                             padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-                            itemCount: _events.length,
-                            separatorBuilder: (_, __) =>
-                                const SizedBox(height: 8),
-                            itemBuilder: (context, i) {
-                              final e = _events[i];
-                              final appName =
-                                  _resolveAppName(e['aplicacionId']);
-                              final contenido =
-                                  (e['contenido'] ?? '').toString();
-                              final fechaIso = (e['fecha'] ?? '').toString();
-                              final dt = DateTime.tryParse(fechaIso);
-                              final fechaFmt = (dt != null)
-                                  ? DateFormat('dd-MM-yyyy HH:mm').format(dt)
-                                  : fechaIso;
-                              final isRead = (e['isRead'] == 1);
-
-                              return Container(
-                                padding: const EdgeInsets.all(12),
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
+                            itemCount: _groups.length,
+                            itemBuilder: (context, idx) {
+                              final g = _groups[idx];
+                              return Card(
+                                margin: const EdgeInsets.only(bottom: 8),
+                                shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(12),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: Colors.black.withOpacity(0.04),
-                                      blurRadius: 6,
-                                      offset: const Offset(0, 2),
-                                    ),
-                                  ],
-                                  border: Border.all(
-                                    color: isRead
-                                        ? Colors.grey.shade300
-                                        : Theme.of(context)
-                                            .colorScheme
-                                            .primary
-                                            .withOpacity(0.25),
-                                  ),
                                 ),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      appName, // <<<<<< ahora muestra NOMBRE
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.w700,
-                                        fontSize: 13,
+                                elevation: 0,
+                                clipBehavior: Clip.antiAlias,
+                                child: Theme(
+                                  data: Theme.of(context).copyWith(
+                                    dividerColor: Colors.transparent,
+                                  ),
+                                  child: ExpansionTile(
+                                    maintainState: true,
+                                    tilePadding: const EdgeInsets.symmetric(horizontal: 12),
+                                    childrenPadding: const EdgeInsets.fromLTRB(8, 0, 8, 12),
+                                    leading: _AppBullet(name: g.appName),
+                                    title: Text(
+                                      g.appName,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(fontWeight: FontWeight.w700),
+                                    ),
+                                    subtitle: Text(
+                                      '${g.events.length} evento(s)',
+                                      style: const TextStyle(fontSize: 12, color: Colors.black54),
+                                    ),
+                                    children: [
+                                      ListView.separated(
+                                        shrinkWrap: true,
+                                        physics: const NeverScrollableScrollPhysics(),
+                                        itemCount: g.events.length,
+                                        separatorBuilder: (_, __) => const SizedBox(height: 8),
+                                        itemBuilder: (_, i) {
+                                          final e = g.events[i];
+                                          final contenido = (e['contenido'] ?? '').toString();
+                                          final fechaIso = (e['fecha'] ?? '').toString();
+                                          final dt = DateTime.tryParse(fechaIso);
+                                          final fechaFmt = dt != null ? _dateFmt.format(dt) : fechaIso;
+                                          final isRead = (e['isRead'] == 1);
+
+                                          return Container(
+                                            padding: const EdgeInsets.all(12),
+                                            decoration: BoxDecoration(
+                                              color: Colors.white,
+                                              borderRadius: BorderRadius.circular(12),
+                                              boxShadow: [
+                                                BoxShadow(
+                                                  color: Colors.black.withOpacity(0.04),
+                                                  blurRadius: 6,
+                                                  offset: const Offset(0, 2),
+                                                ),
+                                              ],
+                                              border: Border.all(
+                                                color: isRead
+                                                    ? Colors.grey.shade300
+                                                    : Theme.of(context)
+                                                        .colorScheme
+                                                        .primary
+                                                        .withOpacity(0.25),
+                                              ),
+                                            ),
+                                            child: Column(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              children: [
+                                                Text(
+                                                  contenido,
+                                                  style: const TextStyle(fontSize: 14),
+                                                ),
+                                                const SizedBox(height: 6),
+                                                Text(
+                                                  fechaFmt,
+                                                  style: const TextStyle(
+                                                    color: Colors.black54,
+                                                    fontSize: 12,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          );
+                                        },
                                       ),
-                                    ),
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      contenido,
-                                      style: const TextStyle(fontSize: 14),
-                                    ),
-                                    const SizedBox(height: 6),
-                                    Text(
-                                      fechaFmt,
-                                      style: const TextStyle(
-                                        color: Colors.black54,
-                                        fontSize: 12,
-                                      ),
-                                    ),
-                                  ],
+                                    ],
+                                  ),
                                 ),
                               );
                             },
@@ -219,6 +287,31 @@ class _ConceptDetailPageState extends State<ConceptDetailPage> {
       ),
     );
   }
+}
+
+class _AppGroup {
+  final String appId;
+  final String appName;
+  final List<Map<String, dynamic>> events;
+  _AppGroup({required this.appId, required this.appName, required this.events});
+}
+
+class _AppBullet extends StatelessWidget {
+  final String name;
+  const _AppBullet({required this.name});
+
+  @override
+  Widget build(BuildContext context) {
+    final initial = name.isNotEmpty ? name.characters.first.toUpperCase() : '•';
+    return CircleAvatar(
+      radius: 16,
+      backgroundColor: Colors.white,
+      child: Text(
+        initial,
+        style: const TextStyle(fontWeight: FontWeight.w700, color: Colors.grey),
+      ),
+    );
+    }
 }
 
 class _InitialBig extends StatelessWidget {
