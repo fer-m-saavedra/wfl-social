@@ -5,9 +5,7 @@ import 'login_page.dart';
 import '../services/data_service.dart';
 import '../services/auth_service.dart';
 import '../services/storage_service.dart';
-// NEW
 import '../services/event_sqlite_service.dart';
-// NEW: import de la página de concepto
 import 'concept_detail_page.dart';
 
 class MyHomePage extends StatefulWidget {
@@ -37,6 +35,10 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   Future<void> _fetchData() async {
+    // Guardamos la selección previa para preservarla tras el refresh
+    final prevEmpId = _selectedEmpId;
+    final prevTypeId = _selectedTypeId;
+
     try {
       final authService =
           AuthService(DataService(storageService: _storageService));
@@ -53,30 +55,71 @@ class _MyHomePageState extends State<MyHomePage> {
           final data = await dataService.fetchData2(session.username);
           final empresas = (data as Map<String, dynamic>);
 
+          // 1) Obtener primera empresa (ordenada) por si toca fallback
           String? firstEmpId;
           String firstEmpName = '';
           String? firstTypeId;
+
           if (empresas.isNotEmpty) {
-            final sorted = empresas.entries.toList()
+            final sortedEmp = empresas.entries.toList()
               ..sort((a, b) => a.key.compareTo(b.key));
-            firstEmpId = sorted.first.key;
-            final firstData = sorted.first.value as Map<String, dynamic>;
+            firstEmpId = sortedEmp.first.key;
+            final firstData = sortedEmp.first.value as Map<String, dynamic>;
             firstEmpName = (firstData['Empresa'] ?? '').toString();
 
-            final tipos = (firstData['tipos'] ?? {}) as Map<String, dynamic>;
-            if (tipos.isNotEmpty) {
-              final sortedTypes = tipos.entries.toList()
+            final firstTipos =
+                (firstData['tipos'] ?? {}) as Map<String, dynamic>;
+            if (firstTipos.isNotEmpty) {
+              final sortedTypes = firstTipos.entries.toList()
                 ..sort((a, b) => a.key.compareTo(b.key));
               firstTypeId = sortedTypes.first.key;
             }
           }
 
+          // 2) Preservar empresa seleccionada (si existe); si no, usar primera
+          String? selEmpId;
+          String selEmpName = '';
+          String? selTypeId;
+          int selIndex = 0;
+
+          if (prevEmpId != null && empresas.containsKey(prevEmpId)) {
+            // Mantener empresa previa
+            selEmpId = prevEmpId;
+            final empData = empresas[selEmpId] as Map<String, dynamic>;
+            selEmpName = (empData['Empresa'] ?? '').toString();
+
+            final tipos = (empData['tipos'] ?? {}) as Map<String, dynamic>;
+            if (tipos.isNotEmpty) {
+              // Mantener tipo previo si existe, sino tomar el primero
+              final sortedTypes = tipos.entries.toList()
+                ..sort((a, b) => a.key.compareTo(b.key));
+              if (prevTypeId != null && tipos.containsKey(prevTypeId)) {
+                selTypeId = prevTypeId;
+                // Calcular índice del tipo para el BottomNavigationBar
+                selIndex = sortedTypes.indexWhere((e) => e.key == selTypeId);
+                if (selIndex < 0) selIndex = 0;
+              } else {
+                selTypeId = sortedTypes.first.key;
+                selIndex = 0;
+              }
+            } else {
+              selTypeId = null;
+              selIndex = 0;
+            }
+          } else {
+            // Fallback: primera empresa/tipo
+            selEmpId = firstEmpId;
+            selEmpName = firstEmpName;
+            selTypeId = firstTypeId;
+            selIndex = 0;
+          }
+
           setState(() {
             _fullDataEmpresas = empresas;
-            _selectedEmpId = firstEmpId;
-            _selectedEmpName = firstEmpName;
-            _selectedTypeId = firstTypeId;
-            _selectedIndex = 0;
+            _selectedEmpId = selEmpId;
+            _selectedEmpName = selEmpName;
+            _selectedTypeId = selTypeId;
+            _selectedIndex = selIndex;
             _isLoading = false;
           });
         } else {
@@ -430,6 +473,7 @@ class _MyHomePageState extends State<MyHomePage> {
         final cData = conceptosList[index].value as Map<String, dynamic>;
         final nombre = (cData['Concepto'] ?? 'Concepto $conceptoId').toString();
         final logo = (cData['UrlIcoConcepto'] ?? '').toString();
+        final conceptUrl = cData['UrlConcepto'] as String?; // <<< NUEVO
         final unread = (cData['totalNoLeidos'] as int?) ?? 0;
         final initial =
             (nombre.isNotEmpty ? nombre.characters.first : '•').toUpperCase();
@@ -452,7 +496,8 @@ class _MyHomePageState extends State<MyHomePage> {
                 empId: empIdInt,
                 tipoId: tipoIdInt,
                 conceptoId: conceptoIdInt,
-                aplicacionesIndex: aplicacionesIndex, // <<<<<< NEW
+                aplicacionesIndex: aplicacionesIndex,
+                conceptUrl: conceptUrl, // <<< NUEVO
               ),
             ),
           );
@@ -570,9 +615,19 @@ class _MyHomePageState extends State<MyHomePage> {
       items.add(BottomNavigationBarItem(icon: iconWidget, label: label));
     }
 
-    if (_selectedIndex >= items.length) _selectedIndex = 0;
-    final currentTypeId = sorted[_selectedIndex].key;
-    if (currentTypeId != _selectedTypeId) _selectedTypeId = currentTypeId;
+    // Sincronizar _selectedIndex con _selectedTypeId (por si cambió tras refresh)
+    if (_selectedTypeId != null) {
+      final idx = sorted.indexWhere((e) => e.key == _selectedTypeId);
+      if (idx >= 0) {
+        _selectedIndex = idx;
+      } else {
+        _selectedIndex = 0;
+        _selectedTypeId = sorted.first.key;
+      }
+    } else {
+      _selectedIndex = 0;
+      _selectedTypeId = sorted.first.key;
+    }
 
     return items;
   }

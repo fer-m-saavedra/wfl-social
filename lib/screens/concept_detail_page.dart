@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../services/data_service.dart';
 import '../services/storage_service.dart';
 
@@ -17,6 +18,10 @@ class ConceptDetailPage extends StatefulWidget {
   /// }
   final Map<String, dynamic> aplicacionesIndex;
 
+  /// URL del concepto (p. ej. cData['UrlConcepto']).
+  /// Si se provee, al tocar el círculo de cabecera se abre en el navegador.
+  final String? conceptUrl;
+
   const ConceptDetailPage({
     super.key,
     required this.conceptName,
@@ -25,6 +30,7 @@ class ConceptDetailPage extends StatefulWidget {
     required this.tipoId,
     required this.conceptoId,
     required this.aplicacionesIndex,
+    this.conceptUrl,
   });
 
   @override
@@ -128,6 +134,45 @@ class _ConceptDetailPageState extends State<ConceptDetailPage> {
     return groups;
   }
 
+  // ===== Navegación a URLs =====
+
+  Uri? _safeParseUrl(String? maybe) {
+    if (maybe == null) return null;
+    final trimmed = maybe.trim();
+    if (trimmed.isEmpty) return null;
+
+    // Si no trae esquema, asumimos https
+    final hasScheme = trimmed.startsWith(RegExp(r'^[a-zA-Z][a-zA-Z0-9+\-.]*://'));
+    final candidate = hasScheme ? trimmed : 'https://$trimmed';
+
+    try {
+      final uri = Uri.parse(candidate);
+      if (uri.hasScheme && (uri.scheme == 'http' || uri.scheme == 'https')) {
+        return uri;
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _tryLaunchUrl(String? urlStr) async {
+    final uri = _safeParseUrl(urlStr);
+    if (uri == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('URL inválida o no disponible.')),
+      );
+      return;
+    }
+    final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No se pudo abrir el enlace.')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final initial = (widget.conceptName.isNotEmpty
@@ -151,31 +196,35 @@ class _ConceptDetailPageState extends State<ConceptDetailPage> {
             ? const Center(child: CircularProgressIndicator())
             : Column(
                 children: [
-                  // Cabecera con logo grande
+                  // Cabecera con logo grande — tap abre UrlConcepto si existe
                   Padding(
                     padding: const EdgeInsets.only(top: 16, bottom: 8),
-                    child: Container(
-                      width: 96,
-                      height: 96,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Colors.grey.shade200,
-                        border: Border.all(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .primary
-                              .withOpacity(0.3),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(999),
+                      onTap: () => _tryLaunchUrl(widget.conceptUrl),
+                      child: Container(
+                        width: 96,
+                        height: 96,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: Colors.grey.shade200,
+                          border: Border.all(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .primary
+                                .withOpacity(0.3),
+                          ),
                         ),
+                        clipBehavior: Clip.antiAlias,
+                        child: (widget.logoUrl.isNotEmpty)
+                            ? Image.network(
+                                widget.logoUrl,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, __, ___) =>
+                                    _InitialBig(initial: initial),
+                              )
+                            : _InitialBig(initial: initial),
                       ),
-                      clipBehavior: Clip.antiAlias,
-                      child: (widget.logoUrl.isNotEmpty)
-                          ? Image.network(
-                              widget.logoUrl,
-                              fit: BoxFit.cover,
-                              errorBuilder: (_, __, ___) =>
-                                  _InitialBig(initial: initial),
-                            )
-                          : _InitialBig(initial: initial),
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -233,44 +282,64 @@ class _ConceptDetailPageState extends State<ConceptDetailPage> {
                                           final dt = DateTime.tryParse(fechaIso);
                                           final fechaFmt = dt != null ? _dateFmt.format(dt) : fechaIso;
                                           final isRead = (e['isRead'] == 1);
+                                          final link =
+                                              (e['link'] ?? e['Link'])?.toString().trim();
 
-                                          return Container(
-                                            padding: const EdgeInsets.all(12),
-                                            decoration: BoxDecoration(
-                                              color: Colors.white,
-                                              borderRadius: BorderRadius.circular(12),
-                                              boxShadow: [
-                                                BoxShadow(
-                                                  color: Colors.black.withOpacity(0.04),
-                                                  blurRadius: 6,
-                                                  offset: const Offset(0, 2),
-                                                ),
-                                              ],
-                                              border: Border.all(
-                                                color: isRead
-                                                    ? Colors.grey.shade300
-                                                    : Theme.of(context)
-                                                        .colorScheme
-                                                        .primary
-                                                        .withOpacity(0.25),
-                                              ),
-                                            ),
-                                            child: Column(
-                                              crossAxisAlignment: CrossAxisAlignment.start,
-                                              children: [
-                                                Text(
-                                                  contenido,
-                                                  style: const TextStyle(fontSize: 14),
-                                                ),
-                                                const SizedBox(height: 6),
-                                                Text(
-                                                  fechaFmt,
-                                                  style: const TextStyle(
-                                                    color: Colors.black54,
-                                                    fontSize: 12,
+                                          return InkWell(
+                                            borderRadius: BorderRadius.circular(12),
+                                            onTap: (link != null && link.isNotEmpty)
+                                                ? () => _tryLaunchUrl(link)
+                                                : null,
+                                            child: Container(
+                                              padding: const EdgeInsets.all(12),
+                                              decoration: BoxDecoration(
+                                                color: Colors.white,
+                                                borderRadius: BorderRadius.circular(12),
+                                                boxShadow: [
+                                                  BoxShadow(
+                                                    color: Colors.black.withOpacity(0.04),
+                                                    blurRadius: 6,
+                                                    offset: const Offset(0, 2),
                                                   ),
+                                                ],
+                                                border: Border.all(
+                                                  color: isRead
+                                                      ? Colors.grey.shade300
+                                                      : Theme.of(context)
+                                                          .colorScheme
+                                                          .primary
+                                                          .withOpacity(0.25),
                                                 ),
-                                              ],
+                                              ),
+                                              child: Column(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                children: [
+                                                  Row(
+                                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                                    children: [
+                                                      Expanded(
+                                                        child: Text(
+                                                          contenido,
+                                                          style: const TextStyle(fontSize: 14),
+                                                        ),
+                                                      ),
+                                                      if (link != null && link.isNotEmpty)
+                                                        const Padding(
+                                                          padding: EdgeInsets.only(left: 8.0),
+                                                          child: Icon(Icons.link, size: 18),
+                                                        ),
+                                                    ],
+                                                  ),
+                                                  const SizedBox(height: 6),
+                                                  Text(
+                                                    fechaFmt,
+                                                    style: const TextStyle(
+                                                      color: Colors.black54,
+                                                      fontSize: 12,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
                                             ),
                                           );
                                         },
@@ -311,7 +380,7 @@ class _AppBullet extends StatelessWidget {
         style: const TextStyle(fontWeight: FontWeight.w700, color: Colors.grey),
       ),
     );
-    }
+  }
 }
 
 class _InitialBig extends StatelessWidget {
