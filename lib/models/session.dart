@@ -34,14 +34,19 @@ class Session {
     );
   }
 
-  // Método para crear una copia con cambios
-  Session copyWith({String? lastEventFetch, bool? isLoggedIn}) {
-    return Session(
-      token: token,
-      username: username,
-      loginTime: loginTime,
-      lastEventFetch: lastEventFetch ?? this.lastEventFetch,
-      isLoggedIn: isLoggedIn ?? this.isLoggedIn,
-    );
-  }
+Session copyWith({
+  String? token,
+  String? username,
+  int? loginTime,
+  String? lastEventFetch,
+  bool? isLoggedIn,
+}) {
+  return Session(
+    token: token ?? this.token,
+    username: username ?? this.username,
+    loginTime: loginTime ?? this.loginTime,
+    lastEventFetch: lastEventFetch ?? this.lastEventFetch,
+    isLoggedIn: isLoggedIn ?? this.isLoggedIn,
+  );
+}
 }

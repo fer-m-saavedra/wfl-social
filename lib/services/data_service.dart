@@ -1,11 +1,13 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+
 import 'event_sqlite_service.dart';
 import 'storage_service.dart';
 import 'config_service.dart';
 import '../services/encryption_service.dart';
 
-/// Excepción específica para 401
+/// Excepción específica para 401 (cuando falla la reautenticación silenciosa).
 class UnauthorizedException implements Exception {
   final String message;
   UnauthorizedException([this.message = '401 Unauthorized']);
@@ -14,6 +16,8 @@ class UnauthorizedException implements Exception {
 }
 
 class DataService {
+  static const String _encPasswordKey = 'enc_password_v1';
+
   final StorageService storageService;
   late final EncryptionService _encryptionService;
 
@@ -25,17 +29,42 @@ class DataService {
     );
   }
 
- 
+  /// Fetch principal con reintento automático si el token expiró:
+  /// - Si responde 401: intenta reautenticarse con password encriptado guardado.
+  /// - Si la reauth funciona: guarda nuevo token en Session y vuelve a intentar el fetch UNA vez.
+  /// - Si la reauth falla: lanza UnauthorizedException → la UI decide ir a Login.
   Future<Map<String, dynamic>> fetchData2(String username) async {
-    // final apiUrl = ConfigService.apiUrlEventos2;
-    final apiUrl = ConfigService.apiUrlEventos;
+    final result = await _fetchOnce(username);
+    if (result.$1) {
+      // ok a la primera
+      return result.$2;
+    }
 
+    // Si no ok: ver si fue 401 y reauth posible
+    if (result.$3 == 401) {
+      final reauthOk = await _attemptSilentReauth(username);
+      if (reauthOk) {
+        final retry = await _fetchOnce(username);
+        if (retry.$1) return retry.$2;
+      }
+      // Reauth falló → avisamos a la capa superior
+      throw UnauthorizedException();
+    }
+
+    // Otra falla diferente a 401
+    throw Exception('Error al obtener los datos: ${result.$3}');
+  }
+
+  /// Llama al endpoint una vez. Retorna (ok, data, statusCode).
+  Future<(bool, Map<String, dynamic>, int)> _fetchOnce(String username) async {
+    final apiUrl = ConfigService.apiUrlEventos; // o apiUrlEventos2
     if (apiUrl == null) {
       throw Exception('La URL del servicio de eventos no está configurada.');
     }
 
     final session = await storageService.getSession();
-    final lastConnection = session?.lastEventFetch ?? DateTime.now().toString();
+    final lastConnection =
+        session?.lastEventFetch ?? DateTime.now().toString();
     final encryptedUsername = _encryptionService.encryptAES(username);
 
     final response = await http.post(
@@ -56,14 +85,14 @@ class DataService {
       final evDb = EventSqliteService();
       await evDb.init();
 
-      // Nivel5: upsert a SQLite
+      // Nivel5 -> SQLite
       final nivel5 = (data['Nivel5'] as List?) ?? [];
       await evDb.upsertFromNivel5(nivel5);
 
       // Construir índice (Empresas -> Tipos -> Conceptos -> Aplicaciones)
       final empresaIndex = buildEmpresaIndex(data);
 
-      // Inyectar conteos de no leídos en cada concepto
+      // Inyectar conteos de no leídos
       final cantNoLeidos = await evDb.countUnreadGrouped();
       for (final g in cantNoLeidos) {
         final empId = g['empId']?.toString();
@@ -87,26 +116,71 @@ class DataService {
         concepto['totalNoLeidos'] = total;
       }
 
-      // Actualizar "última conexión"
-      final newSession =
-          session?.copyWith(lastEventFetch: DateTime.now().toString());
+      // Actualizar "última conexión" en la sesión
+      final newSession = session?.copyWith(
+        lastEventFetch: DateTime.now().toString(),
+      );
       if (newSession != null) {
         await storageService.saveSession(newSession);
       }
 
-      return empresaIndex;
-    } else if (response.statusCode == 401) {
-      throw UnauthorizedException();
-    } else {
-      throw Exception('Error al obtener los datos: ${response.statusCode}');
+      return (true, empresaIndex, 200);
     }
+
+    // No 200 → devolvemos fallo con status
+    return (false, <String, dynamic>{}, response.statusCode);
+  }
+
+  /// Reauth silenciosa: usa la contraseña *ya encriptada* en SharedPreferences.
+  /// Si funciona, actualiza el token en Session.
+  Future<bool> _attemptSilentReauth(String username) async {
+    final apiUrlLogin = ConfigService.apiUrlLogin;
+    if (apiUrlLogin == null) return false;
+
+    // Recuperar password ENCRIPTADO
+    final prefs = await SharedPreferences.getInstance();
+    final encPassword = prefs.getString(_encPasswordKey);
+    if (encPassword == null || encPassword.isEmpty) return false;
+
+    // Backend espera Username y Password encriptados.
+    final encUsername = _encryptionService.encryptAES(username);
+
+    final response = await http.post(
+      Uri.parse(apiUrlLogin),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'Username': encUsername,
+        'Password': encPassword,
+      }),
+    );
+
+    if (response.statusCode == 200) {
+      final Map<String, dynamic> responseData = json.decode(response.body);
+      final token = responseData['Token'] ?? '';
+      if (token.isNotEmpty) {
+        final old = await storageService.getSession();
+        if (old == null) return false;
+
+        final nowMillis = DateTime.now().millisecondsSinceEpoch;
+        final updated = old.copyWith(
+          token: token,
+          isLoggedIn: true,
+          loginTime: nowMillis,
+        );
+        await storageService.saveSession(updated);
+        return true;
+      }
+    }
+
+    return false;
   }
 
   Future<void> clearLocalData() async {
     await storageService.saveEvents({});
   }
 
-  /// Lee un valor (id) desde varias posibles claves (camelCase/snake_case), y lo retorna como string.
+  // ---- Helpers de indexación y APIs locales (iguales a tu versión previa) ----
+
   String _idStr(Map<String, dynamic> m, List<String> keys) {
     for (final k in keys) {
       final v = m[k];
@@ -115,15 +189,6 @@ class DataService {
     return '';
   }
 
-  /// Construye la estructura:
-  /// empresa[empId]["tipos"][tipoId]["conceptos"][conceptoId].aplicaciones[appId]
-  /// Compatibilidad con claves camelCase y snake_case:
-  /// - EmpId / empresa_id
-  /// - TipoId / tipo_id
-  /// - ConceptoId / concepto_id
-  /// - AplicacionId / aplicacion_id
-  ///
-  /// IMPORTANTE: Nivel 3 y 4 se insertan usando **EmpId** (filtrado por empresa).
   Map<String, dynamic> buildEmpresaIndex(Map<String, dynamic> response) {
     final Map<String, dynamic> empresa = {};
 
@@ -166,7 +231,6 @@ class DataService {
     }
 
     // Nivel3: Conceptos (por empresa + tipo)
-    // AHORA VIENEN con EmpId / empresa_id → insertamos SOLO en la empresa/tipo correspondiente
     for (final c in List<Map<String, dynamic>>.from(response['Nivel3'] ?? [])) {
       final empId = _idStr(c, ['EmpId', 'empresa_id', 'emp_id']);
       final tipoId = _idStr(c, ['TipoId', 'tipo_id']);
@@ -226,36 +290,13 @@ class DataService {
     }
 
     return empresa;
-
-    // Estructura final:
-    // {
-    //   "12": {
-    //     EmpId, Empresa, LogoEmp,
-    //     "tipos": {
-    //       "1": {
-    //         EmpId, TipoId, Tipo, Logo,
-    //         "conceptos": {
-    //           "12": {
-    //             EmpId, TipoId, ConceptoId, Concepto, UrlIcoConcepto, UrlConcepto,
-    //             "aplicaciones": {
-    //               "1": { EmpId, TipoId, ConceptoId, AplicacionId, Aplicacion, UrlIcoAplicacion }
-    //             },
-    //             totalNoLeidos
-    //           }
-    //         }
-    //       }
-    //     }
-    //   },
-    //   "_UltimaConexiones": [ ... ]
-    // }
   }
 
-  /// Retorna eventos de un concepto, ordenados:
-  /// 1) No leídos por fecha DESC, luego 2) Leídos por fecha DESC.
+  /// Eventos por concepto
   Future<List<Map<String, dynamic>>> getEventsByConcept({
     required int empId,
     required int tipoId,
-    required int conceptoId, // corresponde a comunidadId en SQLite
+    required int conceptoId,
   }) async {
     final evDb = EventSqliteService();
     await evDb.init();
