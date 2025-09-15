@@ -56,13 +56,13 @@ class _ConceptDetailPageState extends State<ConceptDetailPage> {
     _load();
   }
 
-  String _resolveAppName(dynamic aplicacionIdRaw) {
-    final idStr = aplicacionIdRaw?.toString() ?? '';
-    if (idStr.isEmpty) return 'App';
-    final appNode = widget.aplicacionesIndex[idStr] as Map<String, dynamic>?;
-    final name = (appNode?['Aplicacion'] ?? appNode?['Nombre'] ?? 'App $idStr')
-        .toString();
-    return name;
+  /// Devuelve el nombre de la app si el id existe en el índice; si no, null.
+  String? _appNameIfKnown(String id) {
+    final node = widget.aplicacionesIndex[id] as Map<String, dynamic>?;
+    if (node == null) return null;
+    final raw = (node['Aplicacion'] ?? node['Nombre'])?.toString();
+    if (raw == null || raw.trim().isEmpty) return 'Aplicación $id';
+    return raw;
   }
 
   Future<void> _load() async {
@@ -100,18 +100,23 @@ class _ConceptDetailPageState extends State<ConceptDetailPage> {
     }
   }
 
+  /// Construye grupos **solo** para eventos cuya app exista en `aplicacionesIndex`.
+  /// Los eventos sin `aplicacionId` o con id inexistente se DESCARTAN.
   List<_AppGroup> _buildGroups(List<Map<String, dynamic>> events) {
-    // agrupar por aplicacionId (clave estable)
     final byId = <String, List<Map<String, dynamic>>>{};
+
     for (final e in events) {
-      final id = (e['aplicacionId'] ?? '').toString();
-      final key = id.isEmpty ? '-' : id;
-      byId.putIfAbsent(key, () => []).add(e);
+      final raw = e['aplicacionId'];
+      final id = raw?.toString().trim() ?? '';
+      if (id.isEmpty) continue; // descarta sin id
+      if (!widget.aplicacionesIndex.containsKey(id)) continue; // descarta desconocidos
+
+      byId.putIfAbsent(id, () => []).add(e);
     }
 
-    // construir grupos con nombre resuelto y ordenar eventos por fecha desc
     final groups = <_AppGroup>[];
     byId.forEach((id, list) {
+      // ordenar eventos del grupo por fecha DESC
       list.sort((a, b) {
         final da = DateTime.tryParse((a['fecha'] ?? '').toString());
         final db = DateTime.tryParse((b['fecha'] ?? '').toString());
@@ -120,16 +125,13 @@ class _ConceptDetailPageState extends State<ConceptDetailPage> {
         if (db == null) return -1;
         return db.compareTo(da); // desc
       });
-      groups.add(
-        _AppGroup(
-          appId: id,
-          appName: id == '-' ? 'App' : _resolveAppName(id),
-          events: list,
-        ),
-      );
+
+      final appName = _appNameIfKnown(id);
+      if (appName == null) return; // seguridad extra (no debería pasar)
+      groups.add(_AppGroup(appId: id, appName: appName, events: list));
     });
 
-    // ordenar grupos por nombre de app (alfabético)
+    // ordenar grupos por nombre
     groups.sort((a, b) => a.appName.toLowerCase().compareTo(b.appName.toLowerCase()));
     return groups;
   }
