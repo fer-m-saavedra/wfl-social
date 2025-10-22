@@ -75,6 +75,7 @@ flutter:
   assets:
     - images/logo_wf-sin-fondo.png
     - assets/config/config.json
+    - images/wflw-letras-laterales.png
   #   - images/a_dot_ham.jpeg
 
   # An image asset can refer to one or more resolution-specific "variants", see

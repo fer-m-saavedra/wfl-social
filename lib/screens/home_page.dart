@@ -51,7 +51,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
       if (session != null) {
         final token = session.token;
-        if (token != null) {
+        if (token.isNotEmpty) {
           final data = await dataService.fetchData2(session.username);
           final empresas = (data as Map<String, dynamic>);
 
@@ -233,6 +233,37 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
+  // Indica si una empresa tiene ANY no leído en cualquiera de sus conceptos
+  bool _empresaHasUnread(Map<String, dynamic> empresa) {
+    final tipos = (empresa['tipos'] as Map<String, dynamic>?) ?? {};
+    for (final t in tipos.values) {
+      final conceptos =
+          ((t as Map<String, dynamic>)['conceptos'] as Map<String, dynamic>?) ??
+              {};
+      for (final c in conceptos.values) {
+        final unread = (c is Map && c['totalNoLeidos'] is int)
+            ? (c['totalNoLeidos'] as int)
+            : 0;
+        if (unread > 0) return true;
+      }
+    }
+    return false;
+  }
+
+  // Indica si un TIPO tiene ANY no leído en cualquiera de sus conceptos
+  bool _tipoHasUnread(Map<String, dynamic> tipo) {
+    final conceptos = (tipo['conceptos'] as Map<String, dynamic>?) ?? {};
+    for (final c in conceptos.values) {
+      final unread =
+          (c is Map && c['totalNoLeidos'] is int) ? (c['totalNoLeidos'] as int) : 0;
+      if (unread > 0) return true;
+    }
+    return false;
+  }
+
+  // --------------------------
+  // STORIES “GRANDES” (Instagram-like)
+  // --------------------------
   Widget _buildStoriesEmpresas() {
     final empresasMap = _fullDataEmpresas;
 
@@ -243,13 +274,21 @@ class _MyHomePageState extends State<MyHomePage> {
     final items = empresasMap.entries.toList()
       ..sort((a, b) => a.key.compareTo(b.key));
 
+    // Mostrar badge solo si hay más de una empresa
+    final showBadges = items.length > 1;
+
+    // Tamaños “grandes”
+    const double ringSize = 76; // tamaño del contenido (imagen) aprox 72px
+    const double ringPadding = 4; // grosor aro
+    const double outerSize = ringSize + ringPadding * 2; // total ≈ 84
+
     return SizedBox(
-      height: 84,
+      height: outerSize + 16, // algo de respiración
       child: ListView.separated(
-        padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
         scrollDirection: Axis.horizontal,
         itemCount: items.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 12),
+        separatorBuilder: (_, __) => const SizedBox(width: 14),
         itemBuilder: (context, index) {
           final entry = items[index];
           final empId = entry.key;
@@ -259,8 +298,7 @@ class _MyHomePageState extends State<MyHomePage> {
           final initial = (nombre.isNotEmpty ? nombre[0] : 'R').toUpperCase();
 
           final isSelected = empId == _selectedEmpId;
-          const baseSize = 26.0;
-          final circleSize = isSelected ? baseSize + 10 : baseSize;
+          final hasUnread = showBadges && _empresaHasUnread(data);
 
           return GestureDetector(
             onTap: () {
@@ -281,51 +319,79 @@ class _MyHomePageState extends State<MyHomePage> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 180),
-                  curve: Curves.easeOut,
-                  width: circleSize + 18,
-                  height: circleSize + 18,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: LinearGradient(
-                      colors: [
-                        Theme.of(context).colorScheme.primary.withOpacity(0.6),
-                        Theme.of(context).colorScheme.primary,
-                      ],
-                    ),
-                    boxShadow: isSelected
-                        ? [
-                            BoxShadow(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .primary
-                                  .withOpacity(0.22),
-                              blurRadius: 6,
-                              offset: const Offset(0, 3),
-                            )
-                          ]
-                        : null,
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.all(3),
-                    child: Container(
-                      decoration: const BoxDecoration(
-                        color: Colors.white,
+                Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 180),
+                      curve: Curves.easeOut,
+                      width: outerSize,
+                      height: outerSize,
+                      decoration: BoxDecoration(
                         shape: BoxShape.circle,
+                        gradient: LinearGradient(
+                          colors: isSelected
+                              ? [
+                                  Theme.of(context)
+                                      .colorScheme
+                                      .primary
+                                      .withOpacity(0.85),
+                                  Theme.of(context).colorScheme.primary,
+                                ]
+                              : [
+                                  Theme.of(context)
+                                      .colorScheme
+                                      .primary
+                                      .withOpacity(0.45),
+                                  Theme.of(context)
+                                      .colorScheme
+                                      .primary
+                                      .withOpacity(0.75),
+                                ],
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.10),
+                            blurRadius: 10,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
                       ),
-                      child: ClipOval(
-                        child: SizedBox(
-                          width: circleSize,
-                          height: circleSize,
-                          child: _StoryAvatarImage(
-                            logoUrl: logoUrl,
-                            placeholderInitial: initial,
+                      child: Padding(
+                        padding: const EdgeInsets.all(ringPadding),
+                        child: Container(
+                          decoration: const BoxDecoration(
+                            color: Colors.white,
+                            shape: BoxShape.circle,
+                          ),
+                          child: ClipOval(
+                            child: SizedBox(
+                              width: ringSize,
+                              height: ringSize,
+                              child: _StoryAvatarImage(
+                                logoUrl: logoUrl,
+                                placeholderInitial: initial,
+                              ),
+                            ),
                           ),
                         ),
                       ),
                     ),
-                  ),
+                    if (hasUnread)
+                      Positioned(
+                        right: -1,
+                        top: -1,
+                        child: Container(
+                          width: 14,
+                          height: 14,
+                          decoration: BoxDecoration(
+                            color: Colors.red,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 2),
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               ],
             ),
@@ -340,14 +406,14 @@ class _MyHomePageState extends State<MyHomePage> {
       return const SizedBox.shrink();
     }
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      padding: const EdgeInsets.fromLTRB(16, 6, 16, 10),
       child: Row(
         children: [
           Text(
             _selectedEmpName,
             style: const TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.w600,
+              fontSize: 20, // un poquito más grande
+              fontWeight: FontWeight.w700,
               color: Colors.black87,
             ),
           ),
@@ -370,17 +436,18 @@ class _MyHomePageState extends State<MyHomePage> {
 
     return Container(
       width: double.infinity,
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
         color: const Color(0xFF24224B),
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(14),
       ),
       child: Text(
         tipoNombre,
         style: const TextStyle(
           color: Colors.white,
-          fontWeight: FontWeight.w700,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0.2,
         ),
       ),
     );
@@ -466,14 +533,14 @@ class _MyHomePageState extends State<MyHomePage> {
       });
 
     return ListView.builder(
-      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 14),
       itemCount: conceptosList.length,
       itemBuilder: (context, index) {
         final conceptoId = conceptosList[index].key;
         final cData = conceptosList[index].value as Map<String, dynamic>;
         final nombre = (cData['Concepto'] ?? 'Concepto $conceptoId').toString();
         final logo = (cData['UrlIcoConcepto'] ?? '').toString();
-        final conceptUrl = cData['UrlConcepto'] as String?; // <<< NUEVO
+        final conceptUrl = cData['UrlConcepto'] as String?;
         final unread = (cData['totalNoLeidos'] as int?) ?? 0;
         final initial =
             (nombre.isNotEmpty ? nombre.characters.first : '•').toUpperCase();
@@ -497,7 +564,7 @@ class _MyHomePageState extends State<MyHomePage> {
                 tipoId: tipoIdInt,
                 conceptoId: conceptoIdInt,
                 aplicacionesIndex: aplicacionesIndex,
-                conceptUrl: conceptUrl, // <<< NUEVO
+                conceptUrl: conceptUrl,
               ),
             ),
           );
@@ -511,49 +578,59 @@ class _MyHomePageState extends State<MyHomePage> {
           }
         }
 
+        // TILE estilo WhatsApp
         return InkWell(
           onTap: _openConceptDetail,
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(16),
           child: Container(
-            margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 7),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
             decoration: BoxDecoration(
               color: Colors.grey.shade200,
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(16),
             ),
             child: Row(
               children: [
-                CircleAvatar(
-                  radius: 16,
-                  backgroundColor: Colors.white,
-                  backgroundImage:
-                      (logo.isNotEmpty) ? NetworkImage(logo) : null,
-                  child: (logo.isEmpty)
-                      ? Text(
-                          initial,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w700,
-                            color: Colors.grey,
+                // Avatar grande ~56px
+                Container(
+                  width: 56,
+                  height: 56,
+                  decoration: const BoxDecoration(
+                    color: Colors.white,
+                    shape: BoxShape.circle,
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: (logo.isNotEmpty)
+                      ? Image.network(
+                          logo,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => _InitialCircle(
+                            placeholderInitial: initial,
+                            fontSize: 20,
                           ),
                         )
-                      : null,
+                      : _InitialCircle(
+                          placeholderInitial: initial,
+                          fontSize: 20,
+                        ),
                 ),
-                const SizedBox(width: 10),
+                const SizedBox(width: 12),
                 Expanded(
                   child: Text(
                     nombre,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                      fontWeight: FontWeight.w600,
+                      fontWeight: FontWeight.w700,
                       letterSpacing: 0.2,
+                      fontSize: 16,
                     ),
                   ),
                 ),
                 if (unread > 0)
                   Container(
                     padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                     decoration: BoxDecoration(
                       color: Colors.red,
                       borderRadius: BorderRadius.circular(999),
@@ -562,7 +639,7 @@ class _MyHomePageState extends State<MyHomePage> {
                       '$unread',
                       style: const TextStyle(
                         color: Colors.white,
-                        fontWeight: FontWeight.w700,
+                        fontWeight: FontWeight.w800,
                       ),
                     ),
                   ),
@@ -591,13 +668,17 @@ class _MyHomePageState extends State<MyHomePage> {
     final sorted = tipos.entries.toList()
       ..sort((a, b) => a.key.compareTo(b.key));
 
+    // Mostrar badge solo si hay más de un tipo (más de una pestaña)
+    final showBadges = sorted.length > 1;
+
     for (final e in sorted) {
       final tipoId = e.key;
       final data = e.value as Map<String, dynamic>;
       final label = (data['Tipo'] ?? 'Tipo $tipoId').toString();
       final logoUrl = (data['Logo'] ?? '').toString();
+      final hasUnread = showBadges && _tipoHasUnread(data);
 
-      final iconWidget = (logoUrl.isNotEmpty)
+      final baseIcon = (logoUrl.isNotEmpty)
           ? ClipOval(
               child: SizedBox(
                 width: 24,
@@ -612,7 +693,29 @@ class _MyHomePageState extends State<MyHomePage> {
             )
           : const Icon(Icons.category_outlined, size: 22);
 
-      items.add(BottomNavigationBarItem(icon: iconWidget, label: label));
+      // Apilar badge rojo si corresponde
+      final iconWithBadge = Stack(
+        clipBehavior: Clip.none,
+        children: [
+          baseIcon,
+          if (hasUnread)
+            Positioned(
+              right: -1,
+              top: -2,
+              child: Container(
+                width: 9,
+                height: 9,
+                decoration: BoxDecoration(
+                  color: Colors.red,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white, width: 1.5),
+                ),
+              ),
+            ),
+        ],
+      );
+
+      items.add(BottomNavigationBarItem(icon: iconWithBadge, label: label));
     }
 
     // Sincronizar _selectedIndex con _selectedTypeId (por si cambió tras refresh)
@@ -664,31 +767,10 @@ class _MyHomePageState extends State<MyHomePage> {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Colors.white,
-        toolbarHeight: 100,
+        toolbarHeight: 60,
         title: Row(
           children: [
-            Image.asset('images/logo_wf-sin-fondo.png', height: 80),
-            const SizedBox(width: 30),
-            if (_session != null)
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    "Usuario: $username",
-                    style: const TextStyle(
-                      color: Color.fromRGBO(33, 149, 243, 0.641),
-                      fontSize: 14.0,
-                    ),
-                  ),
-                  Text(
-                    "Ult. Fecha: $lastLoginText",
-                    style: const TextStyle(
-                      color: Color.fromRGBO(33, 149, 243, 0.641),
-                      fontSize: 14.0,
-                    ),
-                  ),
-                ],
-              ),
+            Image.asset('images/wflw-letras-laterales.png', height: 50),
           ],
         ),
         actions: <Widget>[
@@ -697,15 +779,33 @@ class _MyHomePageState extends State<MyHomePage> {
               if (result == 'logout') _logout();
               if (result == 'clean') _confirmAndClean();
             },
-            itemBuilder: (BuildContext context) =>
-                const <PopupMenuEntry<String>>[
+            itemBuilder: (BuildContext context) => [
               PopupMenuItem<String>(
-                value: 'clean',
-                child: Text('Clean all'),
+                enabled: false,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Usuario conectado',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(username),
+                    Text(
+                      'Último login: $lastLoginText',
+                      style: const TextStyle(fontSize: 12, color: Colors.black54),
+                    ),
+                  ],
+                ),
               ),
-              PopupMenuItem<String>(
+              const PopupMenuDivider(),
+              const PopupMenuItem<String>(
+                value: 'clean',
+                child: Text('🧹 Clean all'),
+              ),
+              const PopupMenuItem<String>(
                 value: 'logout',
-                child: Text('Logout'),
+                child: Text('🚪 Logout'),
               ),
             ],
           ),
@@ -716,7 +816,7 @@ class _MyHomePageState extends State<MyHomePage> {
           : Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildStoriesEmpresas(), // fijo
+                _buildStoriesEmpresas(), // fijo (más grande + badge)
                 _buildEmpresaSubtitle(), // fijo
                 _buildSelectedTypeHeader(), // fijo
                 Expanded(
@@ -755,22 +855,26 @@ class _StoryAvatarImage extends StatelessWidget {
     final hasUrl = logoUrl.isNotEmpty;
 
     if (!hasUrl) {
-      return _InitialCircle(placeholderInitial: placeholderInitial);
+      return _InitialCircle(placeholderInitial: placeholderInitial, fontSize: 24);
     }
 
     return Image.network(
       logoUrl,
       fit: BoxFit.cover,
       errorBuilder: (_, __, ___) =>
-          _InitialCircle(placeholderInitial: placeholderInitial),
+          _InitialCircle(placeholderInitial: placeholderInitial, fontSize: 24),
     );
   }
 }
 
 class _InitialCircle extends StatelessWidget {
   final String placeholderInitial;
+  final double fontSize;
 
-  const _InitialCircle({required this.placeholderInitial});
+  const _InitialCircle({
+    required this.placeholderInitial,
+    this.fontSize = 24,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -779,8 +883,8 @@ class _InitialCircle extends StatelessWidget {
       alignment: Alignment.center,
       child: Text(
         placeholderInitial,
-        style: const TextStyle(
-          fontSize: 24,
+        style: TextStyle(
+          fontSize: fontSize,
           fontWeight: FontWeight.w700,
           color: Colors.grey,
         ),
