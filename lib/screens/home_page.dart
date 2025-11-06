@@ -583,8 +583,8 @@ class _MyHomePageState extends State<MyHomePage> {
           onTap: _openConceptDetail,
           borderRadius: BorderRadius.circular(16),
           child: Container(
-            margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 7),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 5),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
             decoration: BoxDecoration(
               color: Colors.grey.shade200,
               borderRadius: BorderRadius.circular(16),
